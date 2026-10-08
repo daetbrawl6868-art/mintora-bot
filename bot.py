@@ -2,13 +2,12 @@ import os
 import sqlite3
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    WebAppInfo, BotCommand, ReplyKeyboardMarkup, KeyboardButton
+    WebAppInfo, BotCommand
 )
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -17,14 +16,14 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 
 # ============================================================
-# CONFIG (из переменных окружения Railway)
+# CONFIG — все значения из Environment Variables на Render
 # ============================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "1329")
 MINI_APP_URL = os.getenv("MINI_APP_URL", "https://grammintora.space")
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
-if not BOT_TOKEN:8867042932:AAGJpI3jj6rRGJrg5ccjI3OmIgAUknK5LzA
+if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN is not set")
 
 # ============================================================
@@ -75,11 +74,9 @@ class DB:
                     value TEXT
                 );
             """)
-            # дефолтные настройки
             c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('maintenance', '0')")
             c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('maintenance_text', '🛠 Бот на техническом перерыве. Скоро вернёмся!')")
 
-    # --- users ---
     def upsert_user(self, user_id, username, first_name, last_name):
         now = datetime.utcnow().isoformat()
         with self.conn() as c:
@@ -98,7 +95,7 @@ class DB:
             row = c.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
             return dict(row) if row else None
 
-    def list_users(self, limit=50, offset=0):
+    def list_users(self, limit=10, offset=0):
         with self.conn() as c:
             rows = c.execute(
                 "SELECT * FROM users ORDER BY joined_at DESC LIMIT ? OFFSET ?",
@@ -123,14 +120,13 @@ class DB:
         with self.conn() as c:
             c.execute("UPDATE users SET is_admin = ? WHERE user_id = ?", (1 if is_admin else 0, user_id))
 
-    def all_user_ids(self, exclude_banned=True):
+    def all_user_ids(self, exclude_banned=False):
         with self.conn() as c:
             q = "SELECT user_id FROM users"
             if exclude_banned:
                 q += " WHERE is_banned = 0"
             return [r["user_id"] for r in c.execute(q).fetchall()]
 
-    # --- logs ---
     def log(self, user_id, action, detail=""):
         with self.conn() as c:
             c.execute(
@@ -138,14 +134,13 @@ class DB:
                 (user_id, action, detail, datetime.utcnow().isoformat())
             )
 
-    def recent_logs(self, limit=50):
+    def recent_logs(self, limit=30):
         with self.conn() as c:
             rows = c.execute(
                 "SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in rows]
 
-    # --- promos ---
     def create_promo(self, code, amount, created_by):
         with self.conn() as c:
             c.execute(
@@ -166,7 +161,6 @@ class DB:
         with self.conn() as c:
             return c.execute("SELECT 1 FROM promos WHERE code = ?", (code.upper(),)).fetchone() is not None
 
-    # --- settings ---
     def get_setting(self, key, default=None):
         with self.conn() as c:
             row = c.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
@@ -210,7 +204,7 @@ def maintenance_text():
     return db.get_setting("maintenance_text", "🛠 Бот на техническом перерыве.")
 
 def admin_menu():
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="adm_stats")],
         [InlineKeyboardButton(text="👥 Пользователи", callback_data="adm_users_0")],
         [InlineKeyboardButton(text="🎟 Промокоды", callback_data="adm_promos")],
@@ -219,7 +213,6 @@ def admin_menu():
         [InlineKeyboardButton(text="📝 Логи", callback_data="adm_logs")],
         [InlineKeyboardButton(text="🚪 Выйти", callback_data="adm_logout")],
     ])
-    return kb
 
 def is_admin(user_id):
     u = db.get_user(user_id)
@@ -229,7 +222,7 @@ def is_admin(user_id):
 # USER HANDLERS
 # ============================================================
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(message: Message):
     u = message.from_user
     db.upsert_user(u.id, u.username, u.first_name, u.last_name)
     db.log(u.id, "start", "")
@@ -273,7 +266,6 @@ async def check_password(message: Message, state: FSMContext):
     if message.from_user.id != candidate_id:
         return
 
-    # Удалить сообщение с паролем
     try:
         await message.delete()
     except Exception:
@@ -344,15 +336,13 @@ async def cb_users(call: CallbackQuery):
         await call.answer("Пусто", show_alert=True)
         return
 
-    lines = [f"👥 <b>Пользователи</b> ({page*10+1}-{page*10+len(users)} из {total})\n"]
     buttons = []
     for u in users:
         name = u["first_name"] or "—"
         username = f"@{u['username']}" if u["username"] else "—"
         status = "🚫" if u["is_banned"] else ("👑" if u["is_admin"] else "✅")
-        lines.append(f"{status} <b>{name}</b> · {username} · <code>{u['user_id']}</code>")
         buttons.append([InlineKeyboardButton(
-            text=f"{status} {name[:20]}",
+            text=f"{status} {name[:20]} · {username[:15]}",
             callback_data=f"adm_user_{u['user_id']}"
         )])
 
@@ -366,7 +356,10 @@ async def cb_users(call: CallbackQuery):
     buttons.append([InlineKeyboardButton(text="← Назад", callback_data="adm_back")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await call.message.edit_text("\n".join(lines[:1]) + f"\nНайдено: {total}\n\nНажми на юзера для действий", reply_markup=kb)
+    await call.message.edit_text(
+        f"👥 <b>Пользователи</b> ({page*10+1}-{page*10+len(users)} из {total})\n\nНажми на юзера:",
+        reply_markup=kb
+    )
     await call.answer()
 
 @router.callback_query(F.data.startswith("adm_user_"))
@@ -605,7 +598,7 @@ async def promo_amount_step(message: Message, state: FSMContext):
     await state.clear()
 
 @router.callback_query(F.data == "adm_promo_del")
-async def cb_promo_del(call: CallbackQuery, state: FSMContext):
+async def cb_promo_del(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     promos = db.list_promos()
@@ -638,7 +631,7 @@ async def cb_logs(call: CallbackQuery):
     logs = db.recent_logs(30)
     txt = "📝 <b>Последние 30 событий</b>\n\n"
     for l in logs:
-        ts = l["ts"][11:19]
+        ts = l["ts"][11:19] if l["ts"] else "—"
         txt += f"<code>{ts}</code> · {l['user_id']} · {l['action']} {l['detail'][:30]}\n"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="← Назад", callback_data="adm_back")]

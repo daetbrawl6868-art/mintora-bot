@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import asyncio
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -22,9 +24,27 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "1329")
 MINI_APP_URL = os.getenv("MINI_APP_URL", "https://grammintora.space")
 DB_PATH = os.getenv("DB_PATH", "bot.db")
+PORT = int(os.getenv("PORT", "10000"))
 
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN is not set")
+
+# ============================================================
+# FAKE HTTP SERVER (чтобы Render не убивал Web Service)
+# ============================================================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Mintora Bot is running")
+
+    def log_message(self, format, *args):
+        pass  # не спамить в логи
+
+def run_http_server():
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    server.serve_forever()
 
 # ============================================================
 # DATABASE
@@ -643,10 +663,15 @@ async def cb_logs(call: CallbackQuery):
 # RUN
 # ============================================================
 async def main():
+    # запускаем фейковый HTTP-сервер в отдельном потоке,
+    # чтобы Render думал что у нас открыт порт
+    threading.Thread(target=run_http_server, daemon=True).start()
+
     await bot.set_my_commands([
         BotCommand(command="start", description="Открыть Mintora Wallet"),
         BotCommand(command="admin", description="Админ-панель"),
     ])
+    print(f"HTTP server listening on port {PORT}")
     print("Bot started")
     await dp.start_polling(bot)
 
